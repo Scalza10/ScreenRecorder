@@ -59,6 +59,52 @@ public class RecordingSessionTests
     }
 
     [Fact]
+    public async Task Keeps_late_microphone_audio_in_sync_across_segments()
+    {
+        // Real microphones start delivering audio ~0.5-0.7 s after the screen. Simulate audio that begins 0.7 s late.
+        static List<string> LateAudio(string path) =>
+        [
+            "-y", "-hide_banner", "-re", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30",
+            "-itsoffset", "0.7", "-re", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+            "-c:v", "libx264", "-preset", "ultrafast", "-bf", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", path,
+        ];
+        var output = NewOutput();
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output, (_, _, path) => LateAudio(path));
+
+        await session.StartAsync();
+        await Task.Delay(1000);
+        await session.PauseAsync();
+        await session.ResumeAsync();
+        await Task.Delay(1000);
+        var final = await session.StopAsync();
+
+        var silences = await DetectSilenceAsync(final);
+        Assert.True(silences.Count >= 2, "expected leading silence and a silent gap at the segment join");
+        Assert.InRange(silences[0].Start, 0.0, 0.05);
+        Assert.InRange(silences[0].End, 0.6, 0.8);
+    }
+
+    private static async Task<List<(double Start, double End)>> DetectSilenceAsync(string path)
+    {
+        var lines = new List<string>();
+        await Core.Ffmpeg.FfmpegProcess.RunAsync(TestMedia.Ffmpeg.Ffmpeg,
+            ["-hide_banner", "-i", path, "-map", "0:a", "-af", "silencedetect=noise=-50dB:d=0.2", "-f", "null", "-"],
+            onStderrLine: l => { lock (lines) lines.Add(l); });
+        var result = new List<(double, double)>();
+        double? start = null;
+        foreach (var line in lines)
+        {
+            var s = System.Text.RegularExpressions.Regex.Match(line, @"silence_start: (-?[\d.]+)");
+            var e = System.Text.RegularExpressions.Regex.Match(line, @"silence_end: (-?[\d.]+)");
+            if (s.Success) start = double.Parse(s.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            if (e.Success && start is { } st)
+                result.Add((st, double.Parse(e.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture)));
+        }
+
+        return result;
+    }
+
+    [Fact]
     public async Task Stop_while_paused_finishes_the_recording()
     {
         var output = NewOutput();

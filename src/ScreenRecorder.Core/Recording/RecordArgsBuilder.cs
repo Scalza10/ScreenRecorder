@@ -14,7 +14,9 @@ public static class RecordArgsBuilder
         var cursor = options.DrawCursor ? "1" : "0";
         var fps = options.Fps.ToString(CultureInfo.InvariantCulture);
 
-        var args = new List<string> { "-y", "-hide_banner", "-thread_queue_size", "1024" };
+        // Both inputs are stamped with the wall clock (and -copyts keeps those stamps) so the microphone, which
+        // starts delivering audio a fraction of a second after the screen, stays aligned with the picture.
+        var args = new List<string> { "-y", "-hide_banner", "-use_wallclock_as_timestamps", "1", "-thread_queue_size", "1024" };
         string videoFilter;
 
         if (backend == CaptureBackend.Ddagrab)
@@ -44,12 +46,18 @@ public static class RecordArgsBuilder
         var withMic = includeMic && !string.IsNullOrWhiteSpace(options.MicDevice);
         if (withMic)
         {
-            args.AddRange(["-f", "dshow", "-audio_buffer_size", "50", "-thread_queue_size", "1024", "-i", $"audio={options.MicDevice}"]);
+            args.AddRange(
+            [
+                "-use_wallclock_as_timestamps", "1", "-f", "dshow", "-audio_buffer_size", "50", "-thread_queue_size", "1024",
+                "-i", $"audio={options.MicDevice}",
+            ]);
         }
 
         args.AddRange(["-map", "0:v"]);
         if (withMic) args.AddRange(["-map", "1:a"]);
-        args.AddRange(["-vf", videoFilter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-g", I(options.Fps * 2)]);
+        args.AddRange(["-copyts", "-avoid_negative_ts", "make_zero"]);
+        // No B-frames: the first packet of every segment is then a clean cut point for joining.
+        args.AddRange(["-vf", videoFilter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-bf", "0", "-g", I(options.Fps * 2)]);
         if (withMic) args.AddRange(["-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1"]);
         args.Add(segmentPath);
         return args;

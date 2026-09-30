@@ -64,6 +64,19 @@ public class RecordArgsBuilderTests
     }
 
     [Fact]
+    public void Screen_and_mic_share_the_wall_clock_so_they_stay_in_sync()
+    {
+        var options = new RecordingOptions(Monitor) { DdagrabOutputIndex = 0, MicDevice = "Mic" };
+
+        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, includeMic: true, "seg.mkv");
+
+        Assert.Equal(2, args.Select((a, i) => (a, i)).Count(x => x.a == "-use_wallclock_as_timestamps" && args[x.i + 1] == "1"));
+        Assert.Contains("-copyts", args);
+        Assert.Equal("make_zero", After(args, "-avoid_negative_ts"));
+        Assert.Equal("0", After(args, "-bf"));
+    }
+
+    [Fact]
     public void Mic_is_skipped_when_not_included_even_if_configured()
     {
         var options = new RecordingOptions(Monitor) { DdagrabOutputIndex = 0, MicDevice = "Mic" };

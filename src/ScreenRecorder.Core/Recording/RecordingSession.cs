@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using ScreenRecorder.Core.Ffmpeg;
+using ScreenRecorder.Core.Media;
 
 namespace ScreenRecorder.Core.Recording;
 
@@ -141,15 +142,26 @@ public sealed class RecordingSession : IAsyncDisposable
             var usable = _segments.Where(s => File.Exists(s) && new FileInfo(s).Length > 1024).ToList();
             if (usable.Count == 0) throw new InvalidOperationException("Nothing was recorded.");
 
-            var listPath = Path.Combine(SegmentDirectory, "segments.txt");
-            var list = string.Join("\n", usable.Select(s => $"file '{Path.GetFileName(s)}'"));
-            await File.WriteAllTextAsync(listPath, list, new UTF8Encoding(false));
+            // Cut every segment to exactly its video span. Audio keeps its offset relative to the video, so a
+            // microphone that started late (or a gap at a pause) becomes silence instead of shifting the sound.
+            var list = new StringBuilder();
+            foreach (var segment in usable)
+            {
+                var span = await MediaProbe.GetVideoSpanAsync(_ffmpeg, segment);
+                list.Append($"file '{Path.GetFileName(segment)}'\n")
+                    .Append($"inpoint {FfmpegTime.Format(span.Start)}\n")
+                    .Append($"outpoint {FfmpegTime.Format(span.End)}\n");
+            }
 
-            var result = await FfmpegProcess.RunAsync(_ffmpeg.Ffmpeg,
-            [
-                "-y", "-hide_banner", "-f", "concat", "-safe", "0", "-i", listPath,
-                "-c", "copy", "-movflags", "+faststart", OutputPath,
-            ]);
+            var listPath = Path.Combine(SegmentDirectory, "segments.txt");
+            await File.WriteAllTextAsync(listPath, list.ToString(), new UTF8Encoding(false));
+
+            var args = new List<string> { "-y", "-hide_banner", "-f", "concat", "-safe", "0", "-i", listPath, "-map", "0:v", "-c:v", "copy" };
+            if (MicrophoneActive)
+                args.AddRange(["-map", "0:a", "-af", "aresample=async=1:first_pts=0", "-c:a", "aac", "-b:a", "160k"]);
+            args.AddRange(["-movflags", "+faststart", OutputPath]);
+
+            var result = await FfmpegProcess.RunAsync(_ffmpeg.Ffmpeg, args);
             result.EnsureSuccess("Saving the recording");
 
             State = RecordingState.Stopped;
