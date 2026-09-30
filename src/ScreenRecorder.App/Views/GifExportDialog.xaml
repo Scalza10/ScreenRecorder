@@ -1,0 +1,65 @@
+<Window x:Class="ScreenRecorder.App.Views.GifExportDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Export GIF" SizeToContent="Height" Width="420" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <StackPanel Margin="20">
+        <TextBlock Text="Save part of the video as an animated GIF" Style="{DynamicResource BodyStrongTextBlockStyle}" />
+        <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0"
+                   Text="Times can be typed as seconds (10.5) or minutes:seconds (1:02.5)." />
+
+        <Grid Margin="0,14,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Text="From" Style="{StaticResource FieldLabel}" Margin="0,0,0,6" />
+                <TextBox x:Name="StartBox" TextChanged="Input_Changed" />
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="To" Style="{StaticResource FieldLabel}" Margin="0,0,0,6" />
+                <TextBox x:Name="EndBox" TextChanged="Input_Changed" />
+            </StackPanel>
+        </Grid>
+
+        <Grid Margin="0,4,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Text="Frames per second" Style="{StaticResource FieldLabel}" />
+                <ComboBox x:Name="FpsBox" HorizontalAlignment="Stretch" SelectionChanged="Input_Changed">
+                    <ComboBoxItem Content="10 (smallest file)" Tag="10" />
+                    <ComboBoxItem Content="15" Tag="15" IsSelected="True" />
+                    <ComboBoxItem Content="20" Tag="20" />
+                    <ComboBoxItem Content="25 (smoothest)" Tag="25" />
+                </ComboBox>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+                <TextBlock Text="Maximum width" Style="{StaticResource FieldLabel}" />
+                <ComboBox x:Name="WidthBox" HorizontalAlignment="Stretch" SelectionChanged="Input_Changed">
+                    <ComboBoxItem Content="320 px" Tag="320" />
+                    <ComboBoxItem Content="480 px" Tag="480" />
+                    <ComboBoxItem Content="640 px" Tag="640" />
+                    <ComboBoxItem Content="800 px" Tag="800" IsSelected="True" />
+                    <ComboBoxItem Content="1280 px" Tag="1280" />
+                    <ComboBoxItem Content="Original size" Tag="0" />
+                </ComboBox>
+            </StackPanel>
+        </Grid>
+
+        <TextBlock x:Name="SummaryText" Margin="0,14,0,0" Style="{StaticResource Hint}" />
+        <TextBlock x:Name="EditsNote" Margin="0,8,0,0" Style="{StaticResource Hint}" Visibility="Collapsed"
+                   Text="Note: the GIF is made from this video as it is. To include your crop or speed edits, export the edited video first and make the GIF from that." />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button x:Name="OkButton" Content="Choose where to save…" Style="{DynamicResource AccentButtonStyle}"
+                    IsDefault="True" Click="Ok_Click" Margin="0,0,8,0" />
+            <Button Content="Cancel" IsCancel="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

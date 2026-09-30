@@ -6,7 +6,8 @@
     <RootNamespace>ScreenRecorder.App</RootNamespace>
     <AssemblyName>ScreenRecorder</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- ThemeMode (Fluent theme, follows Windows light/dark) is marked experimental in .NET 9. -->
+    <NoWarn>$(NoWarn);WPF0001</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\ScreenRecorder.Core\ScreenRecorder.Core.csproj" />

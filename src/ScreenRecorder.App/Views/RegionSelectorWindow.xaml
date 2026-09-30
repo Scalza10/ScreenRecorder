@@ -1,0 +1,31 @@
+<Window x:Class="ScreenRecorder.App.Views.RegionSelectorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Select area to record"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" Topmost="True" ShowInTaskbar="False"
+        Cursor="Cross" WindowStartupLocation="Manual">
+    <Canvas x:Name="Surface" Background="#01000000">
+        <!-- Dimmed screen with a clear hole where the selection is -->
+        <Path x:Name="Dim" Fill="#88000000">
+            <Path.Data>
+                <CombinedGeometry GeometryCombineMode="Exclude">
+                    <CombinedGeometry.Geometry1>
+                        <RectangleGeometry x:Name="FullArea" />
+                    </CombinedGeometry.Geometry1>
+                    <CombinedGeometry.Geometry2>
+                        <RectangleGeometry x:Name="Hole" />
+                    </CombinedGeometry.Geometry2>
+                </CombinedGeometry>
+            </Path.Data>
+        </Path>
+        <Rectangle x:Name="SelectionBorder" Stroke="White" StrokeThickness="2" StrokeDashArray="4 3" Visibility="Collapsed" />
+        <Border x:Name="SizeLabel" Background="#DD000000" CornerRadius="4" Padding="6,2" Visibility="Collapsed">
+            <TextBlock x:Name="SizeText" Foreground="White" FontSize="12" />
+        </Border>
+        <Border x:Name="Instructions" Background="#DD000000" CornerRadius="6" Padding="14,8">
+            <TextBlock Foreground="White" FontSize="14"
+                       Text="Drag to select the area to record  ·  Esc to cancel" />
+        </Border>
+    </Canvas>
+</Window>
