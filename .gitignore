@@ -12,3 +12,15 @@ Desktop.ini
 *.log
 .env
 .env.*
+
+# .NET build output
+bin/
+obj/
+*.user
+.vs/
+TestResults/
+
+# Local tooling (downloaded by scripts/setup.ps1) and publish output
+tools/
+publish/
+.superpowers/
