@@ -42,6 +42,9 @@ public sealed class FfmpegProcess : IDisposable
 
     public bool HasExited => _completion.Task.IsCompleted;
 
+    /// <summary>True when Windows will kill this process if the app exits (see <see cref="ChildProcessJob"/>).</summary>
+    internal bool IsInKillOnCloseJob => ChildProcessJob.Contains(_process);
+
     public static FfmpegProcess Start(string executable, IEnumerable<string> arguments, Action<TimeSpan>? onProgress = null,
         Action<string>? onStderrLine = null)
     {
@@ -62,6 +65,17 @@ public sealed class FfmpegProcess : IDisposable
         process.OutputDataReceived += (_, e) => wrapper.OnStdout(e.Data);
 
         process.Start();
+        try
+        {
+            ChildProcessJob.Add(process);
+        }
+        catch
+        {
+            process.Kill();
+            process.Dispose();
+            throw;
+        }
+
         process.BeginErrorReadLine();
         process.BeginOutputReadLine();
 

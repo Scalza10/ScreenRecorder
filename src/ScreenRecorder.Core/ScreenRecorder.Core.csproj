@@ -2,6 +2,8 @@
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <RootNamespace>ScreenRecorder.Core</RootNamespace>
+    <!-- Required by the LibraryImport source generator (ChildProcessJob). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="ScreenRecorder.Core.Tests" />

@@ -5,8 +5,9 @@ public sealed record FfmpegPaths(string Ffmpeg, string Ffprobe);
 public sealed class FfmpegNotFoundException(string message) : Exception(message);
 
 /// <summary>
-/// Finds the pinned FFmpeg binaries. Deliberately never falls back to PATH, so the app only ever runs the
-/// copy that scripts/setup.ps1 verified (or the one shipped next to the published exe).
+/// Finds the pinned FFmpeg binaries: next to the exe (published build), or in this repository's tools\ffmpeg
+/// (development). Deliberately never looks on PATH or in unrelated folders, so the app only ever runs the copy that
+/// scripts/setup.ps1 verified or the one shipped with the published exe.
 /// </summary>
 public static class FfmpegLocator
 {
@@ -18,7 +19,12 @@ public static class FfmpegLocator
 
         for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
         {
-            if (TryDirectory(Path.Combine(dir.FullName, "tools", "ffmpeg"), out paths)) return paths;
+            // Only the repository root counts (recognised by the FFmpeg lock file next to its tools folder).
+            if (File.Exists(Path.Combine(dir.FullName, "scripts", "ffmpeg.lock.json")) &&
+                TryDirectory(Path.Combine(dir.FullName, "tools", "ffmpeg"), out paths))
+            {
+                return paths;
+            }
         }
 
         throw new FfmpegNotFoundException(

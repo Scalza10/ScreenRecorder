@@ -16,6 +16,15 @@ public enum CaptureBackend
     Gdigrab,
 }
 
+public enum AudioSource
+{
+    None,
+    Microphone,
+
+    /// <summary>A silent track, used when the microphone disappears part-way through a recording.</summary>
+    Silence,
+}
+
 /// <param name="MonitorBounds">The monitor being recorded, in virtual-desktop physical pixels.</param>
 public sealed record RecordingOptions(PixelRect MonitorBounds)
 {

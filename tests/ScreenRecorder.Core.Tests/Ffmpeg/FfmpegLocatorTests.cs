@@ -28,6 +28,7 @@ public class FfmpegLocatorTests
     public void Walks_up_to_find_repo_tools_folder()
     {
         var repo = TestMedia.NewTempDir();
+        Touch(Path.Combine(repo, "scripts", "ffmpeg.lock.json"));
         Touch(Path.Combine(repo, "tools", "ffmpeg", "ffmpeg.exe"));
         Touch(Path.Combine(repo, "tools", "ffmpeg", "ffprobe.exe"));
         var nested = Path.Combine(repo, "src", "App", "bin", "Debug", "net9.0-windows");
@@ -36,6 +37,19 @@ public class FfmpegLocatorTests
         var paths = FfmpegLocator.Locate(nested);
 
         Assert.Equal(Path.Combine(repo, "tools", "ffmpeg", "ffmpeg.exe"), paths.Ffmpeg);
+    }
+
+    [Fact]
+    public void Ignores_tools_folders_outside_this_repository()
+    {
+        // e.g. some unrelated C:\tools\ffmpeg that setup.ps1 never verified
+        var root = TestMedia.NewTempDir();
+        Touch(Path.Combine(root, "tools", "ffmpeg", "ffmpeg.exe"));
+        Touch(Path.Combine(root, "tools", "ffmpeg", "ffprobe.exe"));
+        var nested = Path.Combine(root, "somewhere", "else");
+        Directory.CreateDirectory(nested);
+
+        Assert.Throws<FfmpegNotFoundException>(() => FfmpegLocator.Locate(nested));
     }
 
     [Fact]

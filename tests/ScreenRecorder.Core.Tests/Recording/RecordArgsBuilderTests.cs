@@ -13,7 +13,7 @@ public class RecordArgsBuilderTests
     {
         var options = new RecordingOptions(Monitor) { DdagrabOutputIndex = 1 };
 
-        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, includeMic: false, "seg.mkv");
+        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, AudioSource.None, "seg.mkv");
 
         Assert.Equal("lavfi", After(args, "-f"));
         Assert.Equal("ddagrab=output_idx=1:framerate=30:draw_mouse=1:dup_frames=1", After(args, "-i"));
@@ -28,7 +28,7 @@ public class RecordArgsBuilderTests
     {
         var options = new RecordingOptions(Monitor) { DdagrabOutputIndex = 0, Region = new PixelRect(101, 51, 641, 361), Fps = 60 };
 
-        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, includeMic: false, "seg.mkv");
+        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, AudioSource.None, "seg.mkv");
 
         Assert.Equal("ddagrab=output_idx=0:framerate=60:draw_mouse=1:dup_frames=1:offset_x=100:offset_y=50:video_size=640x360",
             After(args, "-i"));
@@ -39,7 +39,7 @@ public class RecordArgsBuilderTests
     {
         var options = new RecordingOptions(Monitor) { Region = new PixelRect(100, 50, 640, 360), DrawCursor = false };
 
-        var args = RecordArgsBuilder.Build(options, CaptureBackend.Gdigrab, includeMic: false, "seg.mkv");
+        var args = RecordArgsBuilder.Build(options, CaptureBackend.Gdigrab, AudioSource.None, "seg.mkv");
 
         Assert.Equal("gdigrab", After(args, "-f"));
         Assert.Equal("2020", After(args, "-offset_x"));
@@ -55,7 +55,7 @@ public class RecordArgsBuilderTests
     {
         var options = new RecordingOptions(Monitor) { DdagrabOutputIndex = 0, MicDevice = "Microphone Array (Realtek(R) Audio)" };
 
-        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, includeMic: true, "seg.mkv");
+        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, AudioSource.Microphone, "seg.mkv");
 
         Assert.Contains("dshow", args);
         Assert.Contains("audio=Microphone Array (Realtek(R) Audio)", args);
@@ -68,7 +68,7 @@ public class RecordArgsBuilderTests
     {
         var options = new RecordingOptions(Monitor) { DdagrabOutputIndex = 0, MicDevice = "Mic" };
 
-        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, includeMic: true, "seg.mkv");
+        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, AudioSource.Microphone, "seg.mkv");
 
         Assert.Equal(2, args.Select((a, i) => (a, i)).Count(x => x.a == "-use_wallclock_as_timestamps" && args[x.i + 1] == "1"));
         Assert.Contains("-copyts", args);
@@ -80,11 +80,24 @@ public class RecordArgsBuilderTests
     }
 
     [Fact]
+    public void Silence_keeps_an_audio_track_when_the_microphone_is_gone()
+    {
+        var options = new RecordingOptions(Monitor) { DdagrabOutputIndex = 0, MicDevice = "Mic" };
+
+        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, AudioSource.Silence, "seg.mkv");
+
+        Assert.DoesNotContain("dshow", args);
+        Assert.Contains("anullsrc=r=48000:cl=stereo", args);
+        Assert.Equal("aac", After(args, "-c:a"));
+        Assert.Equal(["-map", "0:v", "-map", "1:a"], args.SkipWhile(a => a != "-map").Take(4));
+    }
+
+    [Fact]
     public void Timestamps_are_relative_to_the_given_origin()
     {
         var options = new RecordingOptions(Monitor) { DdagrabOutputIndex = 0 };
 
-        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, false, "seg.mkv", timestampOrigin: 1790743035.25);
+        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, AudioSource.None, "seg.mkv", timestampOrigin: 1790743035.25);
 
         Assert.Equal("-1790743035.25", After(args, "-output_ts_offset"));
         Assert.DoesNotContain("-avoid_negative_ts", args);
@@ -93,7 +106,7 @@ public class RecordArgsBuilderTests
     [Fact]
     public void Encodes_fast_enough_for_real_time()
     {
-        var args = RecordArgsBuilder.Build(new RecordingOptions(Monitor) { DdagrabOutputIndex = 0 }, CaptureBackend.Ddagrab, false, "seg.mkv");
+        var args = RecordArgsBuilder.Build(new RecordingOptions(Monitor) { DdagrabOutputIndex = 0 }, CaptureBackend.Ddagrab, AudioSource.None, "seg.mkv");
 
         Assert.Equal("ultrafast", After(args, "-preset"));
     }
@@ -103,7 +116,7 @@ public class RecordArgsBuilderTests
     {
         var options = new RecordingOptions(Monitor) { DdagrabOutputIndex = 0, MicDevice = "Mic" };
 
-        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, includeMic: false, "seg.mkv");
+        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, AudioSource.None, "seg.mkv");
 
         Assert.DoesNotContain("dshow", args);
     }
@@ -116,7 +129,7 @@ public class RecordArgsBuilderTests
     {
         var options = new RecordingOptions(Monitor) { Region = new PixelRect(x, y, w, h) };
 
-        Assert.Throws<ArgumentException>(() => RecordArgsBuilder.Build(options, CaptureBackend.Gdigrab, false, "seg.mkv"));
+        Assert.Throws<ArgumentException>(() => RecordArgsBuilder.Build(options, CaptureBackend.Gdigrab, AudioSource.None, "seg.mkv"));
     }
 
     [Fact]
@@ -124,6 +137,6 @@ public class RecordArgsBuilderTests
     {
         var options = new RecordingOptions(Monitor);
 
-        Assert.Throws<InvalidOperationException>(() => RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, false, "seg.mkv"));
+        Assert.Throws<InvalidOperationException>(() => RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, AudioSource.None, "seg.mkv"));
     }
 }

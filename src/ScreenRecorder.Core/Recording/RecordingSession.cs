@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text;
 using ScreenRecorder.Core.Ffmpeg;
 using ScreenRecorder.Core.Media;
 
@@ -9,7 +8,7 @@ public enum RecordingState { Idle, Recording, Paused, Stopped }
 
 /// <summary>Produces the FFmpeg arguments for one recording segment. Replaceable so tests can fake the screen.</summary>
 /// <param name="timestampOrigin">Unix time (seconds) just before FFmpeg starts; see <see cref="RecordArgsBuilder.Build"/>.</param>
-public delegate IReadOnlyList<string> SegmentArgsFactory(CaptureBackend backend, bool includeMic, string segmentPath,
+public delegate IReadOnlyList<string> SegmentArgsFactory(CaptureBackend backend, AudioSource audio, string segmentPath,
     double timestampOrigin);
 
 /// <summary>
@@ -24,7 +23,7 @@ public sealed class RecordingSession : IAsyncDisposable
     private readonly FfmpegPaths _ffmpeg;
     private readonly RecordingOptions _options;
     private readonly SegmentArgsFactory _argsFactory;
-    private readonly List<Segment> _segments = [];
+    private readonly List<RecordedSegment> _segments = [];
     private readonly Stopwatch _segmentClock = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -37,7 +36,7 @@ public sealed class RecordingSession : IAsyncDisposable
         _options = options;
         OutputPath = outputPath;
         SegmentDirectory = outputPath + ".parts";
-        _argsFactory = argsFactory ?? ((backend, mic, path, origin) => RecordArgsBuilder.Build(options, backend, mic, path, origin));
+        _argsFactory = argsFactory ?? ((backend, audio, path, origin) => RecordArgsBuilder.Build(options, backend, audio, path, origin));
     }
 
     /// <summary>
@@ -77,22 +76,24 @@ public sealed class RecordingSession : IAsyncDisposable
             var backends = _options.DdagrabOutputIndex is null
                 ? new[] { CaptureBackend.Gdigrab }
                 : [CaptureBackend.Ddagrab, CaptureBackend.Gdigrab];
-            var micChoices = string.IsNullOrWhiteSpace(_options.MicDevice) ? new[] { false } : [true, false];
+            var audioChoices = string.IsNullOrWhiteSpace(_options.MicDevice)
+                ? new[] { AudioSource.None }
+                : [AudioSource.Microphone, AudioSource.None];
 
             FfmpegResult? lastFailure = null;
-            foreach (var mic in micChoices)
+            foreach (var audio in audioChoices)
             {
                 foreach (var backend in backends)
                 {
-                    lastFailure = await TryStartSegmentAsync(backend, mic);
+                    lastFailure = await TryStartSegmentAsync(backend, audio);
                     if (lastFailure is not null) continue;
 
                     Backend = backend;
-                    MicrophoneActive = mic;
+                    MicrophoneActive = audio == AudioSource.Microphone;
                     State = RecordingState.Recording;
                     if (backend != backends[0])
                         Warning?.Invoke("Desktop Duplication capture is unavailable, so the slower GDI capture is being used.");
-                    if (micChoices[0] && !mic)
+                    if (audioChoices[0] == AudioSource.Microphone && !MicrophoneActive)
                         Warning?.Invoke($"The microphone \"{_options.MicDevice}\" could not be opened, so this recording has no audio.");
                     return;
                 }
@@ -128,7 +129,14 @@ public sealed class RecordingSession : IAsyncDisposable
         try
         {
             if (State != RecordingState.Paused) return;
-            var failure = await TryStartSegmentAsync(Backend, MicrophoneActive);
+            var failure = await TryStartSegmentAsync(Backend, MicrophoneActive ? AudioSource.Microphone : AudioSource.None);
+            if (failure is not null && MicrophoneActive && await TryStartSegmentAsync(Backend, AudioSource.Silence) is null)
+            {
+                // Keep going without sound rather than refusing to resume (the segment gets a silent track).
+                failure = null;
+                Warning?.Invoke($"The microphone \"{_options.MicDevice}\" stopped working, so the recording continues without sound.");
+            }
+
             if (failure is not null) throw new FfmpegException("Recording could not be resumed.", failure.StderrText);
             State = RecordingState.Recording;
         }
@@ -148,27 +156,8 @@ public sealed class RecordingSession : IAsyncDisposable
                 throw new InvalidOperationException("There is no recording in progress.");
             if (_current is not null) await StopSegmentAsync();
 
-            var list = new StringBuilder();
-            foreach (var segment in _segments.Where(s => File.Exists(s.Path) && new FileInfo(s.Path).Length > 1024))
-            {
-                if (await KeptSpanAsync(segment) is not { } span) continue;
-                list.Append($"file '{Path.GetFileName(segment.Path)}'\n")
-                    .Append($"inpoint {FfmpegTime.Format(span.Start)}\n")
-                    .Append($"outpoint {FfmpegTime.Format(span.End)}\n");
-            }
-
-            if (list.Length == 0) throw new InvalidOperationException("Nothing was recorded.");
-            var listPath = Path.Combine(SegmentDirectory, "segments.txt");
-            await File.WriteAllTextAsync(listPath, list.ToString(), new UTF8Encoding(false));
-
-            // Video is copied as-is. Audio is re-encoded so silence can fill a late microphone start and pause gaps.
-            var args = new List<string> { "-y", "-hide_banner", "-f", "concat", "-safe", "0", "-i", listPath, "-map", "0:v", "-c:v", "copy" };
-            if (MicrophoneActive)
-                args.AddRange(["-map", "0:a", "-af", "aresample=async=1:first_pts=0", "-c:a", "aac", "-b:a", "160k"]);
-            args.AddRange(["-movflags", "+faststart", OutputPath]);
-
-            var result = await FfmpegProcess.RunAsync(_ffmpeg.Ffmpeg, args);
-            result.EnsureSuccess("Saving the recording");
+            // On failure the state and segments are kept, so the caller can simply try StopAsync again.
+            await SegmentJoiner.JoinAsync(_ffmpeg, _segments, MicrophoneActive, SegmentDirectory, OutputPath, w => Warning?.Invoke(w));
 
             State = RecordingState.Stopped;
             TryDeleteDirectory();
@@ -178,25 +167,6 @@ public sealed class RecordingSession : IAsyncDisposable
         {
             _gate.Release();
         }
-    }
-
-    /// <summary>
-    /// The part of a segment to keep: from its first video frame to the earliest of the last video frame, the end of
-    /// the audio, and the moment Stop/Pause was pressed. Audio keeps its offset relative to the video, so a microphone
-    /// that started late becomes leading silence instead of shifting the sound.
-    /// </summary>
-    private async Task<TimeRange?> KeptSpanAsync(Segment segment)
-    {
-        if (await MediaProbe.GetStreamSpanAsync(_ffmpeg, segment.Path) is not { } video) return null;
-        var end = video.End;
-
-        if (MicrophoneActive && await MediaProbe.GetStreamSpanAsync(_ffmpeg, segment.Path, audio: true) is { } audio && audio.End < end)
-            end = audio.End;
-
-        if (segment.StopRequestedAt is { } stop && stop - segment.Origin < end)
-            end = stop - segment.Origin;
-
-        return end > video.Start ? new TimeRange(video.Start, end) : null;
     }
 
     /// <summary>Ends the recording without saving anything.</summary>
@@ -224,11 +194,11 @@ public sealed class RecordingSession : IAsyncDisposable
     }
 
     /// <summary>Starts a segment; returns null on success or the failure if FFmpeg exits during start-up.</summary>
-    private async Task<FfmpegResult?> TryStartSegmentAsync(CaptureBackend backend, bool includeMic)
+    private async Task<FfmpegResult?> TryStartSegmentAsync(CaptureBackend backend, AudioSource audio)
     {
-        var segment = new Segment(Path.Combine(SegmentDirectory, $"segment_{_segments.Count:D3}.mkv"), DateTime.UtcNow);
-        var origin = (segment.Origin - DateTime.UnixEpoch).TotalSeconds;
-        var process = FfmpegProcess.Start(_ffmpeg.Ffmpeg, _argsFactory(backend, includeMic, segment.Path, origin));
+        var segment = new RecordedSegment(Path.Combine(SegmentDirectory, $"segment_{_segments.Count:D3}.mkv"), DateTime.UtcNow);
+        var origin = (segment.Origin!.Value - DateTime.UnixEpoch).TotalSeconds;
+        var process = FfmpegProcess.Start(_ffmpeg.Ffmpeg, _argsFactory(backend, audio, segment.Path, origin));
         _segmentClock.Restart();
 
         // Device errors (bad monitor, missing microphone, driver problems) make FFmpeg exit almost immediately.
@@ -312,15 +282,5 @@ public sealed class RecordingSession : IAsyncDisposable
         }
 
         _gate.Dispose();
-    }
-
-    private sealed class Segment(string path, DateTime origin)
-    {
-        public string Path { get; } = path;
-
-        /// <summary>Wall-clock time the segment's timestamps are relative to.</summary>
-        public DateTime Origin { get; } = origin;
-
-        public DateTime? StopRequestedAt { get; set; }
     }
 }

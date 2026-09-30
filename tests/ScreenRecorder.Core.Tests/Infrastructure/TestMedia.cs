@@ -20,6 +20,11 @@ public static class TestMedia
     {
         var dir = Path.Combine(Path.GetTempPath(), "ScreenRecorderTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
+        // Don't leave test videos (possibly including a screen capture) lying around in %TEMP%.
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        };
         return dir;
     }
 

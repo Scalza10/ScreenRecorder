@@ -33,7 +33,7 @@ public class RecordingSessionTests
     {
         var output = NewOutput();
         await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output,
-            (backend, mic, path, _) => FakeCapture(path, mic));
+            (backend, audio, path, _) => FakeCapture(path, audio != AudioSource.None));
 
         await session.StartAsync();
         Assert.Equal(RecordingState.Recording, session.State);
@@ -95,10 +95,14 @@ public class RecordingSessionTests
             "-itsoffset", "0.5", "-re", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
             "-c:v", "libx264", "-preset", "ultrafast", "-bf", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", path,
         ];
-        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(), (_, _, path, _) => ShortAudio(path));
+        // No drain delay, so the video ends ~1 s after the audio: within the tolerance for audio lost in FFmpeg's pipeline.
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(), (_, _, path, _) => ShortAudio(path))
+        {
+            AudioDrainDelay = TimeSpan.Zero,
+        };
 
         await session.StartAsync();
-        await Task.Delay(1500);
+        await Task.Delay(1000);
         var final = await session.StopAsync();
 
         var info = await MediaProbe.ProbeAsync(TestMedia.Ffmpeg, final);
@@ -130,7 +134,7 @@ public class RecordingSessionTests
     {
         var output = NewOutput();
         await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output,
-            (backend, mic, path, _) => FakeCapture(path, mic));
+            (backend, audio, path, _) => FakeCapture(path, audio != AudioSource.None));
 
         await session.StartAsync();
         await Task.Delay(500);
@@ -146,7 +150,7 @@ public class RecordingSessionTests
     {
         var output = NewOutput();
         await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output,
-            (backend, mic, path, _) => FakeCapture(path, mic));
+            (backend, audio, path, _) => FakeCapture(path, audio != AudioSource.None));
 
         await session.StartAsync();
         await Task.Delay(2000);
@@ -163,7 +167,7 @@ public class RecordingSessionTests
     {
         var warnings = new List<string>();
         await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(),
-            (backend, mic, path, _) => backend == CaptureBackend.Ddagrab ? Broken : FakeCapture(path, mic));
+            (backend, audio, path, _) => backend == CaptureBackend.Ddagrab ? Broken : FakeCapture(path, audio != AudioSource.None));
         session.Warning += warnings.Add;
 
         await session.StartAsync();
@@ -180,7 +184,7 @@ public class RecordingSessionTests
     {
         var warnings = new List<string>();
         await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(),
-            (backend, mic, path, _) => mic ? Broken : FakeCapture(path, withAudio: false));
+            (backend, audio, path, _) => audio == AudioSource.Microphone ? Broken : FakeCapture(path, withAudio: false));
         session.Warning += warnings.Add;
 
         await session.StartAsync();
@@ -205,7 +209,8 @@ public class RecordingSessionTests
     [Fact]
     public async Task Records_the_real_screen()
     {
-        if (Environment.GetEnvironmentVariable("SCREENRECORDER_SKIP_SCREEN") == "1") return; // headless CI
+        // Opt-in, because it records 2 s of the real screen: set SCREENRECORDER_SCREEN_TESTS=1 to run it.
+        if (Environment.GetEnvironmentVariable("SCREENRECORDER_SCREEN_TESTS") != "1") return;
 
         var output = NewOutput();
         var options = new RecordingOptions(new PixelRect(0, 0, 640, 480))
@@ -223,5 +228,115 @@ public class RecordingSessionTests
         // The file starts at the first captured frame (GDI capture can take ~1 s to deliver it) and ends when Stop
         // was pressed, so it is never longer than the time spent recording.
         Assert.InRange(info.Duration.TotalSeconds, 1.5, elapsed + 0.2);
+    }
+
+    [Fact]
+    public async Task Keeps_the_video_when_the_microphone_stops_mid_recording()
+    {
+        // e.g. a Bluetooth headset disconnects: FFmpeg keeps recording the screen, the audio simply ends.
+        static List<string> AudioEndsEarly(string path) =>
+        [
+            "-y", "-hide_banner", "-re", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30",
+            "-re", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+            "-c:v", "libx264", "-preset", "ultrafast", "-bf", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", path,
+        ];
+        var warnings = new List<string>();
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(), (_, _, path, _) => AudioEndsEarly(path));
+        session.Warning += warnings.Add;
+
+        await session.StartAsync();
+        await Task.Delay(4000);
+        var final = await session.StopAsync();
+
+        var info = await MediaProbe.ProbeAsync(TestMedia.Ffmpeg, final);
+        Assert.InRange(info.Duration.TotalSeconds, session.Elapsed.TotalSeconds - 1.0, session.Elapsed.TotalSeconds + 1.0);
+        Assert.True(info.HasAudio);
+        Assert.Contains(warnings, w => w.Contains("microphone", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Resume_falls_back_to_silence_when_the_microphone_is_gone()
+    {
+        var attempts = 0;
+        var warnings = new List<string>();
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(), (_, audio, path, _) =>
+            ++attempts > 1 && audio == AudioSource.Microphone ? Broken : FakeCapture(path, audio != AudioSource.None));
+        session.Warning += warnings.Add;
+
+        await session.StartAsync();
+        await Task.Delay(1000);
+        await session.PauseAsync();
+        await session.ResumeAsync();
+
+        Assert.Equal(RecordingState.Recording, session.State);
+        Assert.Contains(warnings, w => w.Contains("microphone", StringComparison.OrdinalIgnoreCase));
+        await Task.Delay(1000);
+        var info = await MediaProbe.ProbeAsync(TestMedia.Ffmpeg, await session.StopAsync());
+        Assert.True(info.HasAudio);
+        Assert.InRange(info.Duration.TotalSeconds, 3.0, 7.0);
+    }
+
+    [Fact]
+    public async Task Saving_can_be_retried_after_it_fails()
+    {
+        var output = NewOutput();
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output,
+            (backend, audio, path, _) => FakeCapture(path, audio != AudioSource.None));
+        await session.StartAsync();
+        await Task.Delay(1000);
+
+        Directory.CreateDirectory(output); // something is in the way: FFmpeg cannot write the MP4
+        await Assert.ThrowsAsync<FfmpegException>(session.StopAsync);
+        Assert.True(Directory.Exists(session.SegmentDirectory));
+
+        Directory.Delete(output);
+        var final = await session.StopAsync();
+        Assert.True(File.Exists(final));
+        Assert.Equal(RecordingState.Stopped, session.State);
+    }
+
+    [Fact]
+    public async Task A_damaged_segment_is_skipped_instead_of_losing_everything()
+    {
+        var warnings = new List<string>();
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(),
+            (backend, audio, path, _) => FakeCapture(path, audio != AudioSource.None));
+        session.Warning += warnings.Add;
+
+        await session.StartAsync();
+        await Task.Delay(1000);
+        await session.PauseAsync();
+        await File.WriteAllBytesAsync(Path.Combine(session.SegmentDirectory, "segment_000.mkv"), new byte[4096]);
+        await session.ResumeAsync();
+        await Task.Delay(1000);
+        var info = await MediaProbe.ProbeAsync(TestMedia.Ffmpeg, await session.StopAsync());
+
+        Assert.InRange(info.Duration.TotalSeconds, 1.5, 3.5); // just the second part
+        Assert.Contains(warnings, w => w.Contains("skipped", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Unsaved_recordings_can_be_recovered()
+    {
+        var folder = TestMedia.NewTempDir();
+        var parts = Directory.CreateDirectory(Path.Combine(folder, "Recording_1.mp4.parts")).FullName;
+        foreach (var name in new[] { "segment_000.mkv", "segment_001.mkv" })
+        {
+            (await Core.Ffmpeg.FfmpegProcess.RunAsync(TestMedia.Ffmpeg.Ffmpeg,
+            [
+                "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=2", "-f", "lavfi", "-i", "sine=duration=2",
+                "-c:v", "libx264", "-preset", "ultrafast", "-bf", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", Path.Combine(parts, name),
+            ])).EnsureSuccess("segment fixture");
+        }
+
+        Assert.Equal([parts], RecordingRecovery.FindUnsaved(folder));
+        var recovered = await RecordingRecovery.RecoverAsync(TestMedia.Ffmpeg, parts);
+
+        Assert.Equal(Path.Combine(folder, "Recording_1.mp4"), recovered);
+        var info = await MediaProbe.ProbeAsync(TestMedia.Ffmpeg, recovered);
+        Assert.InRange(info.Duration.TotalSeconds, 3.8, 4.3);
+        Assert.True(info.HasAudio);
+        Assert.False(Directory.Exists(parts));
+        Assert.Empty(RecordingRecovery.FindUnsaved(folder));
     }
 }

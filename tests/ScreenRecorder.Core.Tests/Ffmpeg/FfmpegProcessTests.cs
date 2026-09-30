@@ -41,6 +41,14 @@ public class FfmpegProcessTests
     }
 
     [Fact]
+    public void Started_processes_are_killed_if_the_app_dies()
+    {
+        using var process = FfmpegProcess.Start(TestMedia.Ffmpeg.Ffmpeg, ["-hide_banner", "-f", "lavfi", "-i", "anullsrc", "-f", "null", "-"]);
+
+        Assert.True(process.IsInKillOnCloseJob);
+    }
+
+    [Fact]
     public async Task StopGracefully_finalizes_a_long_running_encode()
     {
         var output = Path.Combine(TestMedia.NewTempDir(), "stopped.mkv");
