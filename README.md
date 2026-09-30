@@ -103,7 +103,11 @@ Recording notes:
 - The microphone usually starts delivering audio ~0.5–1 s after the first screen frame. Both inputs share a wall-clock
   origin, so this becomes leading silence instead of shifting the sound out of sync.
 
-## License note
+## License
 
-The app code is yours. The FFmpeg "essentials" build is GPL-licensed (its license is copied to
-`tools\ffmpeg\FFMPEG-LICENSE.txt`); using it locally for personal use is fine.
+The code in this repository is released under the [MIT License](LICENSE).
+
+FFmpeg is not part of this repository. `scripts\setup.ps1` downloads it separately. The "essentials" build is
+GPL-licensed, and its license is copied to `tools\ffmpeg\FFMPEG-LICENSE.txt`. The portable build from
+`scripts\publish.ps1` includes `ffmpeg.exe`, so if you give that folder to others, the GPL applies to those FFmpeg
+files: keep the license with them and point to the FFmpeg source.
