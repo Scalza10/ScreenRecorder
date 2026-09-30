@@ -1,0 +1,142 @@
+using ScreenRecorder.Core.Ffmpeg;
+using ScreenRecorder.Core.Media;
+using ScreenRecorder.Core.Recording;
+using ScreenRecorder.Core.Tests.Infrastructure;
+
+namespace ScreenRecorder.Core.Tests.Recording;
+
+public class RecordingSessionTests
+{
+    private static readonly RecordingOptions Options =
+        new(new PixelRect(0, 0, 320, 240)) { DdagrabOutputIndex = 0, MicDevice = "Test Mic" };
+
+    /// <summary>
+    /// Stands in for the screen: an endless real-time test pattern (+ tone when the mic is on). Note that a -re lavfi
+    /// source runs up to ~0.6 s ahead of the wall clock per segment, so durations are compared with a tolerance.
+    /// </summary>
+    private static List<string> FakeCapture(string segmentPath, bool withAudio)
+    {
+        var args = new List<string> { "-y", "-hide_banner", "-re", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30" };
+        if (withAudio) args.AddRange(["-re", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"]);
+        args.AddRange(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]);
+        if (withAudio) args.AddRange(["-c:a", "aac"]);
+        args.Add(segmentPath);
+        return args;
+    }
+
+    private static readonly List<string> Broken = ["-hide_banner", "-f", "lavfi", "-i", "nosuchsource", "x.mkv"];
+
+    private static string NewOutput() => Path.Combine(TestMedia.NewTempDir(), "Recording.mp4");
+
+    [Fact]
+    public async Task Pause_and_resume_produce_one_mp4_without_the_paused_gap()
+    {
+        var output = NewOutput();
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output,
+            (backend, mic, path) => FakeCapture(path, mic));
+
+        await session.StartAsync();
+        Assert.Equal(RecordingState.Recording, session.State);
+        await Task.Delay(2000);
+        await session.PauseAsync();
+        Assert.Equal(RecordingState.Paused, session.State);
+        var pausedAt = session.Elapsed;
+        await Task.Delay(3000);
+        Assert.Equal(pausedAt, session.Elapsed);
+        await session.ResumeAsync();
+        await Task.Delay(2000);
+        var final = await session.StopAsync();
+
+        Assert.Equal(output, final);
+        Assert.Equal(RecordingState.Stopped, session.State);
+        var info = await MediaProbe.ProbeAsync(TestMedia.Ffmpeg, final);
+        // Including the 3 s pause would push the file well past Elapsed + 3 s.
+        var elapsed = session.Elapsed.TotalSeconds;
+        Assert.InRange(elapsed, 6.5, 8.5); // 2 x (1.5 s start-up check + 2 s)
+        Assert.InRange(info.Duration.TotalSeconds, elapsed - 0.5, elapsed + 1.5);
+        Assert.True(info.HasAudio);
+        Assert.False(Directory.Exists(session.SegmentDirectory));
+    }
+
+    [Fact]
+    public async Task Stop_while_paused_finishes_the_recording()
+    {
+        var output = NewOutput();
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output,
+            (backend, mic, path) => FakeCapture(path, mic));
+
+        await session.StartAsync();
+        await Task.Delay(2000);
+        await session.PauseAsync();
+        var final = await session.StopAsync();
+
+        var info = await MediaProbe.ProbeAsync(TestMedia.Ffmpeg, final);
+        var elapsed = session.Elapsed.TotalSeconds;
+        Assert.InRange(info.Duration.TotalSeconds, elapsed - 0.5, elapsed + 1.0);
+    }
+
+    [Fact]
+    public async Task Falls_back_to_gdigrab_when_ddagrab_fails()
+    {
+        var warnings = new List<string>();
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(),
+            (backend, mic, path) => backend == CaptureBackend.Ddagrab ? Broken : FakeCapture(path, mic));
+        session.Warning += warnings.Add;
+
+        await session.StartAsync();
+        await Task.Delay(1000);
+        await session.StopAsync();
+
+        Assert.Equal(CaptureBackend.Gdigrab, session.Backend);
+        Assert.True(session.MicrophoneActive);
+        Assert.Contains(warnings, w => w.Contains("GDI", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Continues_without_microphone_when_it_cannot_be_opened()
+    {
+        var warnings = new List<string>();
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(),
+            (backend, mic, path) => mic ? Broken : FakeCapture(path, withAudio: false));
+        session.Warning += warnings.Add;
+
+        await session.StartAsync();
+        await Task.Delay(1000);
+        var final = await session.StopAsync();
+
+        Assert.Equal(CaptureBackend.Ddagrab, session.Backend);
+        Assert.False(session.MicrophoneActive);
+        Assert.Contains(warnings, w => w.Contains("microphone", StringComparison.OrdinalIgnoreCase));
+        Assert.False((await MediaProbe.ProbeAsync(TestMedia.Ffmpeg, final)).HasAudio);
+    }
+
+    [Fact]
+    public async Task Start_throws_when_every_capture_method_fails()
+    {
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(), (_, _, _) => Broken);
+
+        await Assert.ThrowsAsync<FfmpegException>(session.StartAsync);
+        Assert.Equal(RecordingState.Idle, session.State);
+    }
+
+    [Fact]
+    public async Task Records_the_real_screen_with_ddagrab()
+    {
+        if (Environment.GetEnvironmentVariable("SCREENRECORDER_SKIP_SCREEN") == "1") return; // headless CI
+
+        var output = NewOutput();
+        var options = new RecordingOptions(new PixelRect(0, 0, 640, 480))
+            { DdagrabOutputIndex = 0, Region = new PixelRect(0, 0, 640, 480) };
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, options, output);
+
+        await session.StartAsync();
+        await Task.Delay(2000);
+        var final = await session.StopAsync();
+
+        var info = await MediaProbe.ProbeAsync(TestMedia.Ffmpeg, final);
+        Assert.Equal((640, 480), (info.Width, info.Height));
+        var elapsed = session.Elapsed.TotalSeconds;
+        Assert.InRange(elapsed, 3.0, 4.5); // 1.5 s start-up check + 2 s
+        Assert.InRange(info.Duration.TotalSeconds, elapsed - 0.5, elapsed + 0.5);
+    }
+}
