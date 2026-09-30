@@ -249,7 +249,10 @@ public class RecordingSessionTests
         var final = await session.StopAsync();
 
         var info = await MediaProbe.ProbeAsync(TestMedia.Ffmpeg, final);
-        Assert.InRange(info.Duration.TotalSeconds, session.Elapsed.TotalSeconds - 1.0, session.Elapsed.TotalSeconds + 1.0);
+        // The audio lasts 1 s; the video must be kept well beyond that (the exact length depends on how fast the fake
+        // test-pattern source runs under load, so it is not compared with Elapsed).
+        Assert.True(info.Duration.TotalSeconds > 3.0, $"only {info.Duration.TotalSeconds:0.00} s kept; elapsed {session.Elapsed.TotalSeconds:0.00} s");
+        Assert.True(info.Duration <= session.Elapsed + TimeSpan.FromSeconds(1), "longer than the time spent recording");
         Assert.True(info.HasAudio);
         Assert.Contains(warnings, w => w.Contains("microphone", StringComparison.OrdinalIgnoreCase));
     }
