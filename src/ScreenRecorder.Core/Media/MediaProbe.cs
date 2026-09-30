@@ -16,17 +16,18 @@ public static class MediaProbe
         return Parse(json);
     }
 
-    /// <summary>First video timestamp and end of the last video frame, read from the packets.</summary>
-    public static async Task<TimeRange> GetVideoSpanAsync(FfmpegPaths ffmpeg, string path, CancellationToken cancellationToken = default)
+    /// <summary>First timestamp and end of the last packet of the first video (or audio) stream, or null if it has none.</summary>
+    public static async Task<TimeRange?> GetStreamSpanAsync(FfmpegPaths ffmpeg, string path, bool audio = false,
+        CancellationToken cancellationToken = default)
     {
         var (result, csv) = await FfmpegProcess.RunWithOutputAsync(ffmpeg.Ffprobe,
-            ["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", path],
+            ["-v", "error", "-select_streams", audio ? "a:0" : "v:0", "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", path],
             cancellationToken);
         result.EnsureSuccess($"Reading '{Path.GetFileName(path)}'");
-        return ParseVideoSpan(csv);
+        return ParseSpan(csv);
     }
 
-    internal static TimeRange ParseVideoSpan(string csv)
+    internal static TimeRange? ParseSpan(string csv)
     {
         double? start = null, end = null;
         foreach (var line in csv.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -38,7 +39,7 @@ public static class MediaProbe
             end = end is { } e ? Math.Max(e, pts + duration) : pts + duration;
         }
 
-        if (start is null || end is null || end <= start) throw new InvalidDataException("The file contains no video frames.");
+        if (start is null || end is null || end <= start) return null;
         return new TimeRange(TimeSpan.FromSeconds(Math.Max(0, start.Value)), TimeSpan.FromSeconds(end.Value));
     }
 

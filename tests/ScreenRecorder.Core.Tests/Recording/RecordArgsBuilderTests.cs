@@ -74,6 +74,28 @@ public class RecordArgsBuilderTests
         Assert.Contains("-copyts", args);
         Assert.Equal("make_zero", After(args, "-avoid_negative_ts"));
         Assert.Equal("0", After(args, "-bf"));
+        // Only the first audio packet is placed by the wall clock; after that timestamps come from the sample count,
+        // because microphone buffers arrive in bursts and bursty wall-clock stamps make FFmpeg drop audio.
+        Assert.Equal("asetpts=N/SR/TB+STARTPTS", After(args, "-af"));
+    }
+
+    [Fact]
+    public void Timestamps_are_relative_to_the_given_origin()
+    {
+        var options = new RecordingOptions(Monitor) { DdagrabOutputIndex = 0 };
+
+        var args = RecordArgsBuilder.Build(options, CaptureBackend.Ddagrab, false, "seg.mkv", timestampOrigin: 1790743035.25);
+
+        Assert.Equal("-1790743035.25", After(args, "-output_ts_offset"));
+        Assert.DoesNotContain("-avoid_negative_ts", args);
+    }
+
+    [Fact]
+    public void Encodes_fast_enough_for_real_time()
+    {
+        var args = RecordArgsBuilder.Build(new RecordingOptions(Monitor) { DdagrabOutputIndex = 0 }, CaptureBackend.Ddagrab, false, "seg.mkv");
+
+        Assert.Equal("ultrafast", After(args, "-preset"));
     }
 
     [Fact]

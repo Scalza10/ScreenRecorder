@@ -1,4 +1,5 @@
 using System.Globalization;
+using ScreenRecorder.Core.Ffmpeg;
 
 namespace ScreenRecorder.Core.Recording;
 
@@ -7,7 +8,12 @@ public static class RecordArgsBuilder
     private const string EvenSize = "crop=trunc(iw/2)*2:trunc(ih/2)*2";
 
     /// <summary>Builds the FFmpeg arguments that record one segment (from start/resume until pause/stop).</summary>
-    public static List<string> Build(RecordingOptions options, CaptureBackend backend, bool includeMic, string segmentPath)
+    /// <param name="timestampOrigin">
+    /// Unix time in seconds, taken just before FFmpeg starts. The segment's timestamps become "seconds since this
+    /// moment", so the app can map its own clock (e.g. when Stop was pressed) onto the recording.
+    /// </param>
+    public static List<string> Build(RecordingOptions options, CaptureBackend backend, bool includeMic, string segmentPath,
+        double? timestampOrigin = null)
     {
         if (options.Fps is < 1 or > 120) throw new ArgumentException("Frame rate must be between 1 and 120.", nameof(options));
         var region = ValidRegion(options);
@@ -55,10 +61,15 @@ public static class RecordArgsBuilder
 
         args.AddRange(["-map", "0:v"]);
         if (withMic) args.AddRange(["-map", "1:a"]);
-        args.AddRange(["-copyts", "-avoid_negative_ts", "make_zero"]);
+        args.Add("-copyts");
+        if (timestampOrigin is { } origin) args.AddRange(["-output_ts_offset", FfmpegTime.Number(-origin)]);
+        else args.AddRange(["-avoid_negative_ts", "make_zero"]);
+        // ultrafast: capture must keep up in real time (edits are re-encoded at higher quality on export).
         // No B-frames: the first packet of every segment is then a clean cut point for joining.
-        args.AddRange(["-vf", videoFilter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-bf", "0", "-g", I(options.Fps * 2)]);
-        if (withMic) args.AddRange(["-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1"]);
+        args.AddRange(["-vf", videoFilter, "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-bf", "0", "-g", I(options.Fps * 2)]);
+        // The first audio packet is placed by the wall clock; later timestamps follow the sample count. (Microphone
+        // buffers arrive in bursts, and bursty wall-clock stamps overlap, which makes FFmpeg drop audio.)
+        if (withMic) args.AddRange(["-c:a", "aac", "-b:a", "160k", "-af", "asetpts=N/SR/TB+STARTPTS"]);
         args.Add(segmentPath);
         return args;
     }

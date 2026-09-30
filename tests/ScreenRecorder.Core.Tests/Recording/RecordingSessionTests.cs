@@ -33,7 +33,7 @@ public class RecordingSessionTests
     {
         var output = NewOutput();
         await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output,
-            (backend, mic, path) => FakeCapture(path, mic));
+            (backend, mic, path, _) => FakeCapture(path, mic));
 
         await session.StartAsync();
         Assert.Equal(RecordingState.Recording, session.State);
@@ -69,7 +69,7 @@ public class RecordingSessionTests
             "-c:v", "libx264", "-preset", "ultrafast", "-bf", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", path,
         ];
         var output = NewOutput();
-        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output, (_, _, path) => LateAudio(path));
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output, (_, _, path, _) => LateAudio(path));
 
         await session.StartAsync();
         await Task.Delay(1000);
@@ -82,6 +82,27 @@ public class RecordingSessionTests
         Assert.True(silences.Count >= 2, "expected leading silence and a silent gap at the segment join");
         Assert.InRange(silences[0].Start, 0.0, 0.05);
         Assert.InRange(silences[0].End, 0.6, 0.8);
+    }
+
+    [Fact]
+    public async Task Cuts_each_segment_where_both_audio_and_video_exist()
+    {
+        // FFmpeg discards audio still in its pipeline when it stops, so audio can end before the video.
+        // Simulate audio that starts 0.5 s late and lasts only 1 s.
+        static List<string> ShortAudio(string path) =>
+        [
+            "-y", "-hide_banner", "-re", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30",
+            "-itsoffset", "0.5", "-re", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+            "-c:v", "libx264", "-preset", "ultrafast", "-bf", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", path,
+        ];
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(), (_, _, path, _) => ShortAudio(path));
+
+        await session.StartAsync();
+        await Task.Delay(1500);
+        var final = await session.StopAsync();
+
+        var info = await MediaProbe.ProbeAsync(TestMedia.Ffmpeg, final);
+        Assert.InRange(info.Duration.TotalSeconds, 1.3, 1.7); // audio end: 0.5 s offset + 1 s
     }
 
     private static async Task<List<(double Start, double End)>> DetectSilenceAsync(string path)
@@ -105,11 +126,27 @@ public class RecordingSessionTests
     }
 
     [Fact]
+    public async Task Discard_deletes_everything_recorded()
+    {
+        var output = NewOutput();
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output,
+            (backend, mic, path, _) => FakeCapture(path, mic));
+
+        await session.StartAsync();
+        await Task.Delay(500);
+        await session.DiscardAsync();
+
+        Assert.Equal(RecordingState.Stopped, session.State);
+        Assert.False(File.Exists(output));
+        Assert.False(Directory.Exists(session.SegmentDirectory));
+    }
+
+    [Fact]
     public async Task Stop_while_paused_finishes_the_recording()
     {
         var output = NewOutput();
         await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, output,
-            (backend, mic, path) => FakeCapture(path, mic));
+            (backend, mic, path, _) => FakeCapture(path, mic));
 
         await session.StartAsync();
         await Task.Delay(2000);
@@ -126,7 +163,7 @@ public class RecordingSessionTests
     {
         var warnings = new List<string>();
         await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(),
-            (backend, mic, path) => backend == CaptureBackend.Ddagrab ? Broken : FakeCapture(path, mic));
+            (backend, mic, path, _) => backend == CaptureBackend.Ddagrab ? Broken : FakeCapture(path, mic));
         session.Warning += warnings.Add;
 
         await session.StartAsync();
@@ -143,7 +180,7 @@ public class RecordingSessionTests
     {
         var warnings = new List<string>();
         await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(),
-            (backend, mic, path) => mic ? Broken : FakeCapture(path, withAudio: false));
+            (backend, mic, path, _) => mic ? Broken : FakeCapture(path, withAudio: false));
         session.Warning += warnings.Add;
 
         await session.StartAsync();
@@ -159,14 +196,14 @@ public class RecordingSessionTests
     [Fact]
     public async Task Start_throws_when_every_capture_method_fails()
     {
-        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(), (_, _, _) => Broken);
+        await using var session = new RecordingSession(TestMedia.Ffmpeg, Options, NewOutput(), (_, _, _, _) => Broken);
 
         await Assert.ThrowsAsync<FfmpegException>(session.StartAsync);
         Assert.Equal(RecordingState.Idle, session.State);
     }
 
     [Fact]
-    public async Task Records_the_real_screen_with_ddagrab()
+    public async Task Records_the_real_screen()
     {
         if (Environment.GetEnvironmentVariable("SCREENRECORDER_SKIP_SCREEN") == "1") return; // headless CI
 
@@ -183,6 +220,8 @@ public class RecordingSessionTests
         Assert.Equal((640, 480), (info.Width, info.Height));
         var elapsed = session.Elapsed.TotalSeconds;
         Assert.InRange(elapsed, 3.0, 4.5); // 1.5 s start-up check + 2 s
-        Assert.InRange(info.Duration.TotalSeconds, elapsed - 0.5, elapsed + 0.5);
+        // The file starts at the first captured frame (GDI capture can take ~1 s to deliver it) and ends when Stop
+        // was pressed, so it is never longer than the time spent recording.
+        Assert.InRange(info.Duration.TotalSeconds, 1.5, elapsed + 0.2);
     }
 }
