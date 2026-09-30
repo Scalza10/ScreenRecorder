@@ -26,23 +26,28 @@ public partial class RecordView : UserControl
     private RecordingToolbar? _toolbar;
     private PixelRect? _region;
     private MonitorInfo? _regionMonitor;
+    private readonly List<string> _warnings = [];
     private bool _busy;
 
     public RecordView()
     {
         InitializeComponent();
         Loaded += OnLoaded;
-        Unloaded += (_, _) => _hotkeys?.Dispose();
     }
 
     public event Action<string>? OpenInEditorRequested;
 
     public bool IsRecording => _session is { State: RecordingState.Recording or RecordingState.Paused };
 
+    /// <summary>Starting, pausing, resuming or saving is in progress.</summary>
+    public bool IsBusy => _busy;
+
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         if (_hotkeys is not null) return; // Loaded fires again when switching tabs
         _hotkeys = new HotkeyService();
+        // Tab switches unload this view; the shortcuts must live as long as the window.
+        Window.GetWindow(this)!.Closed += (_, _) => _hotkeys.Dispose();
         var stopOk = _hotkeys.Register(Key.F9, () => _ = StopRecordingAsync(openInEditor: true));
         var pauseOk = _hotkeys.Register(Key.F10, () => _ = TogglePauseAsync());
         if (!stopOk || !pauseOk) ShowStatus("Another app is using Ctrl+Shift+F9/F10, so those shortcuts are unavailable. Use the recording controls instead.");
@@ -51,6 +56,37 @@ public partial class RecordView : UserControl
         FolderText.Text = $"Saved in {_folder}";
         RefreshRecordings();
         await LoadMicrophonesAsync();
+        await OfferRecoveryAsync();
+    }
+
+    /// <summary>Recordings that were never joined (the app crashed, or saving failed) can be turned back into MP4s.</summary>
+    private async Task OfferRecoveryAsync()
+    {
+        var unsaved = RecordingRecovery.FindUnsaved(_folder);
+        if (unsaved.Count == 0) return;
+
+        var answer = Dialogs.Show(this,
+            $"Found {unsaved.Count} recording(s) that were not saved, probably because the app closed while recording. Recover them now?",
+            "Unsaved recordings", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (answer != MessageBoxResult.Yes) return;
+
+        var recovered = 0;
+        var warnings = new List<string>();
+        foreach (var parts in unsaved)
+        {
+            try
+            {
+                await RecordingRecovery.RecoverAsync(App.Ffmpeg, parts, warnings.Add);
+                recovered++;
+            }
+            catch (Exception ex)
+            {
+                Dialogs.ShowError(this, "Could not recover a recording", ex, $"The recorded parts are still in {parts}.");
+            }
+        }
+
+        RefreshRecordings();
+        ShowStatus($"Recovered {recovered} recording(s)." + (warnings.Count > 0 ? "\n" + string.Join("\n", warnings) : ""));
     }
 
     private void LoadMonitors()
@@ -138,8 +174,8 @@ public partial class RecordView : UserControl
         RecordButton.IsEnabled = false;
         RecordButton.Content = "Starting…";
         var session = new RecordingSession(App.Ffmpeg, options, RecordingPaths.NewRecordingPath(_folder, DateTime.Now));
-        var warnings = new List<string>();
-        session.Warning += warnings.Add;
+        _warnings.Clear();
+        session.Warning += warning => Dispatcher.BeginInvoke(() => OnWarning(warning));
         session.Faulted += error => Dispatcher.BeginInvoke(() => OnRecordingFaulted(error));
         try
         {
@@ -155,11 +191,10 @@ public partial class RecordView : UserControl
         }
 
         _session = session;
-        if (warnings.Count > 0) ShowStatus(string.Join("\n", warnings));
         RecordButton.IsEnabled = true;
         RecordButton.Content = "■ Stop and save";
 
-        _toolbar = new RecordingToolbar(session, monitor, warnings);
+        _toolbar = new RecordingToolbar(session, monitor);
         _toolbar.PauseToggleRequested += () => _ = TogglePauseAsync();
         _toolbar.StopRequested += () => _ = StopRecordingAsync(openInEditor: true);
         Window.GetWindow(this)!.WindowState = WindowState.Minimized;
@@ -187,29 +222,43 @@ public partial class RecordView : UserControl
         }
     }
 
-    public async Task StopRecordingAsync(bool openInEditor)
+    /// <summary>Saves the recording. Returns false if saving failed; the recording is then kept so it can be retried.</summary>
+    public async Task<bool> StopRecordingAsync(bool openInEditor)
     {
-        if (_busy || _session is null) return;
+        if (_busy || _session is null) return false;
         _busy = true;
         var session = _session;
         _toolbar?.ShowSaving();
         try
         {
             var path = await session.StopAsync();
-            RefreshRecordings();
-            if (openInEditor) OpenInEditorRequested?.Invoke(path);
-        }
-        catch (Exception ex)
-        {
-            Dialogs.ShowError(this, "Could not save the recording", ex);
-        }
-        finally
-        {
             await session.DisposeAsync();
             _session = null;
             CloseToolbarAndRestore();
+            RefreshRecordings();
+            if (openInEditor) OpenInEditorRequested?.Invoke(path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            CloseToolbarAndRestore();
+            RecordButton.Content = "■ Try saving again";
+            Dialogs.ShowError(this, "Could not save the recording", ex,
+                $"Nothing is lost: the recorded parts are kept in {session.SegmentDirectory}. Fix the problem (for example, " +
+                "free up disk space) and click Try saving again.");
+            return false;
+        }
+        finally
+        {
             _busy = false;
         }
+    }
+
+    private void OnWarning(string warning)
+    {
+        _warnings.Add(warning);
+        ShowStatus(string.Join("\n", _warnings));
+        _toolbar?.AddWarning(warning);
     }
 
     public async Task DiscardRecordingAsync()

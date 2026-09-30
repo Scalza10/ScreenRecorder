@@ -11,8 +11,8 @@ Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $outDir   = Join-Path $repoRoot 'publish'
 
+# setup.ps1 throws on any failure ($ErrorActionPreference = 'Stop'), which also stops this script.
 & (Join-Path $PSScriptRoot 'setup.ps1')
-if ($LASTEXITCODE -ne 0) { throw 'setup.ps1 failed' }
 
 dotnet publish (Join-Path $repoRoot 'src\ScreenRecorder.App\ScreenRecorder.App.csproj') `
     -c Release -r win-x64 --self-contained true `

@@ -16,16 +16,10 @@ public partial class RecordingToolbar : Window
     private readonly RecordingSession _session;
     private readonly DispatcherTimer _timer;
 
-    public RecordingToolbar(RecordingSession session, MonitorInfo monitor, IReadOnlyList<string> warnings)
+    public RecordingToolbar(RecordingSession session, MonitorInfo monitor)
     {
         _session = session;
         InitializeComponent();
-
-        if (warnings.Count > 0)
-        {
-            WarningText.Text = string.Join("\n", warnings);
-            WarningText.Visibility = Visibility.Visible;
-        }
 
         SourceInitialized += (_, _) =>
         {
@@ -58,6 +52,12 @@ public partial class RecordingToolbar : Window
         PauseButton.Content = paused ? "Resume" : "Pause";
         StateText.Text = paused ? "PAUSED" : "REC";
         RecDot.Fill = paused ? Brushes.Gray : new SolidColorBrush(Color.FromRgb(0xE8, 0x11, 0x23));
+    }
+
+    public void AddWarning(string warning)
+    {
+        WarningText.Text = WarningText.Text.Length == 0 ? warning : WarningText.Text + "\n" + warning;
+        WarningText.Visibility = Visibility.Visible;
     }
 
     public void ShowSaving()

@@ -5,9 +5,10 @@ namespace ScreenRecorder.App;
 
 internal static class Dialogs
 {
-    public static void ShowError(DependencyObject? owner, string title, Exception error)
+    public static void ShowError(DependencyObject? owner, string title, Exception error, string? hint = null)
     {
         var text = error.Message;
+        if (hint is not null) text += "\n\n" + hint;
         if (error is FfmpegException { Details.Length: > 0 } ffmpeg) text += "\n\nDetails from FFmpeg:\n" + ffmpeg.Details;
         Show(owner, text, title, MessageBoxButton.OK, MessageBoxImage.Error);
     }

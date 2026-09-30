@@ -23,15 +23,29 @@ public partial class MainWindow : Window
     protected override async void OnClosing(CancelEventArgs e)
     {
         base.OnClosing(e);
-        if (_closingAfterStop || !Recorder.IsRecording) return;
+        if (_closingAfterStop) return;
+        if (Recorder.IsBusy)
+        {
+            e.Cancel = true;
+            Dialogs.Show(this, "The recording is starting, pausing or being saved. Please try again in a moment.", "Screen Recorder");
+            return;
+        }
+
+        if (!Recorder.IsRecording) return;
 
         e.Cancel = true;
         var answer = Dialogs.Show(this, "A recording is in progress. Save it before closing?", "Screen Recorder",
             MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
         if (answer == MessageBoxResult.Cancel) return;
 
-        if (answer == MessageBoxResult.Yes) await Recorder.StopRecordingAsync(openInEditor: false);
-        else await Recorder.DiscardRecordingAsync();
+        if (answer == MessageBoxResult.Yes)
+        {
+            if (!await Recorder.StopRecordingAsync(openInEditor: false)) return; // saving failed: stay open to retry
+        }
+        else
+        {
+            await Recorder.DiscardRecordingAsync();
+        }
 
         _closingAfterStop = true;
         Close();

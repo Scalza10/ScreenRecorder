@@ -329,9 +329,11 @@ public partial class EditorView : UserControl
         Pause();
         var source = _path;
         var output = OutputNaming.Unique(OutputNaming.Edited(source));
-        await RunExportAsync($"Saving {Path.GetFileName(output)}…",
-            progress => VideoExporter.ExportAsync(App.Ffmpeg, source, output, _plan, progress));
-        if (!File.Exists(output)) return;
+        if (!await RunExportAsync($"Saving {Path.GetFileName(output)}…", output,
+                progress => VideoExporter.ExportAsync(App.Ffmpeg, source, output, _plan, progress)))
+        {
+            return;
+        }
 
         FilesChanged?.Invoke();
         await LoadAsync(output);
@@ -357,9 +359,11 @@ public partial class EditorView : UserControl
 
         var source = _path;
         var output = save.FileName;
-        await RunExportAsync($"Making {Path.GetFileName(output)}…",
-            progress => GifExporter.ExportAsync(App.Ffmpeg, source, output, options, progress));
-        if (!File.Exists(output)) return;
+        if (!await RunExportAsync($"Making {Path.GetFileName(output)}…", output,
+                progress => GifExporter.ExportAsync(App.Ffmpeg, source, output, options, progress)))
+        {
+            return;
+        }
 
         FilesChanged?.Invoke();
         var size = new FileInfo(output).Length / 1024.0 / 1024.0;
@@ -374,7 +378,8 @@ public partial class EditorView : UserControl
         return new TimeRange(start, end > Duration ? Duration : end);
     }
 
-    private async Task RunExportAsync(string message, Func<Action<double>, Task> export)
+    /// <summary>Runs an export with progress. On failure, reports it and deletes the half-written output.</summary>
+    private async Task<bool> RunExportAsync(string message, string output, Func<Action<double>, Task> export)
     {
         _busy = true;
         UpdateUi();
@@ -384,11 +389,22 @@ public partial class EditorView : UserControl
         try
         {
             await export(p => Dispatcher.BeginInvoke(() => Progress.Value = p));
+            return true;
         }
         catch (Exception ex)
         {
+            try
+            {
+                File.Delete(output);
+            }
+            catch (IOException)
+            {
+                // Best effort; the error below is what matters.
+            }
+
             ShowStatus("Export failed.");
             Dialogs.ShowError(this, "Export failed", ex);
+            return false;
         }
         finally
         {

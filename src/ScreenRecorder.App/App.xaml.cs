@@ -28,6 +28,15 @@ public partial class App : Application
             return;
         }
 
+        // Last line of defence: report unexpected errors instead of crashing mid-recording. (If the app does die,
+        // Windows stops FFmpeg and the recorded parts are offered for recovery on the next start.)
+        DispatcherUnhandledException += (_, args) =>
+        {
+            Dialogs.ShowError(null, "Unexpected error", args.Exception);
+            args.Handled = true;
+        };
+        TaskScheduler.UnobservedTaskException += (_, args) => args.SetObserved();
+
         MainWindow = new MainWindow();
         MainWindow.Show();
     }

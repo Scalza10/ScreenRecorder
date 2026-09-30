@@ -36,8 +36,10 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 # 2. Run the app
 dotnet run --project src\ScreenRecorder.App
 
-# 3. Run the tests (they generate their own test videos; one test records 2 s of your screen)
+# 3. Run the tests (they generate their own test videos and delete them afterwards)
 dotnet test
+#    Optional: also test real screen capture (records 2 s of your screen, then deletes it)
+$env:SCREENRECORDER_SCREEN_TESTS = "1"; dotnet test
 ```
 
 ### A portable build
@@ -67,15 +69,20 @@ packages (lock files) and the exact FFmpeg build (`scripts/ffmpeg.lock.json` + h
 
 ## Troubleshooting
 
-- **The window is blank/white.** This comes from the graphics driver, not the app: GPU rendering is failing (other
-  WPF apps are affected too). Restarting Windows or updating the graphics driver usually fixes it. Until then, start
-  the app with `ScreenRecorder.exe --software-render` (or `dotnet run --project src\ScreenRecorder.App -- --software-render`).
+- **The window is blank/white.** GPU rendering isn't available to the app (other WPF apps are affected too; this has
+  been seen while Windows was locked or the display was off). Start the app with `ScreenRecorder.exe --software-render`
+  (or `dotnet run --project src\ScreenRecorder.App -- --software-render`); restarting Windows or updating the
+  graphics driver may also help.
 - **"Desktop Duplication capture is unavailable…"** The app fell back to GDI capture, which works everywhere but
   uses more CPU (large screens may record below 30 fps). Desktop Duplication is refused over Remote Desktop, for
-  monitors on a second GPU, and sometimes when the graphics driver is in a bad state.
+  monitors on a second GPU, while Windows is locked, and sometimes when the graphics driver is in a bad state.
 - **The recording has no sound / silent audio.** Check *Settings → Privacy & security → Microphone* and that the mic
   isn't muted. If the microphone can't be opened, the app records without audio and tells you.
 - **FFmpeg not found.** Run `scripts\setup.ps1` (or put `ffmpeg.exe` and `ffprobe.exe` next to `ScreenRecorder.exe`).
+- **The app crashed or was closed while recording.** Nothing is lost: recordings are written in parts while you
+  record, and the next time the app starts it offers to recover them. If saving fails (e.g. the disk is full), the
+  parts are kept and **Try saving again** retries. If the microphone disconnects mid-recording, the video continues
+  and the rest is silent.
 
 ## How it works
 
@@ -91,6 +98,8 @@ tests/                    xUnit tests using FFmpeg-generated fixture videos
 Recording notes:
 - Capture uses Desktop Duplication (`ddagrab`), falling back to GDI (`gdigrab`).
 - Recording pauses by closing the current segment. Each segment is a crash-safe MKV.
+- Every FFmpeg process is placed in a Windows job object, so Windows stops it if the app exits for any reason; it can
+  never keep recording in the background.
 - The microphone usually starts delivering audio ~0.5–1 s after the first screen frame. Both inputs share a wall-clock
   origin, so this becomes leading silence instead of shifting the sound out of sync.
 
